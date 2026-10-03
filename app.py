@@ -59,7 +59,15 @@ INSTRUCTIONS = {
     "Explain simply": "Explain the material in very simple words, as if to a secondary school student. Use one everyday example.",
     "Ask a question": "Answer the student's question clearly and accurately in a few short paragraphs. If you are not sure about a fact, say so instead of guessing.",
 }
+st.divider()
+st.write("**Was this helpful?**")
+rating = st.feedback("thumbs", key="thumbs")
+if rating is not None:
+    st.success("Thanks for your feedback! 🙏" if rating == 1
+               else "Sorry about that. Please tell us what went wrong below.")
 
+FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSd2Ye-U8eMSdyUrBcAU5eMIUvGYhRUPPMwejPOOLcFnH1unIA/viewform"
+st.link_button("💬 Give us your feedback (30 seconds)", FORM_URL)
 
 def read_docx(f):
     doc = Document(io.BytesIO(f.getvalue()))

@@ -397,18 +397,42 @@ def speech_text(md):
 
 
 SPEAK_HTML = """
-<div style="font-family:sans-serif;display:flex;gap:8px">
-  <button id="play" style="padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer">🔊 Listen</button>
-  <button id="stop" style="padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer">⏹ Stop</button>
+<div style="font-family:sans-serif">
+  <div style="display:flex;gap:8px">
+    <button id="play" style="padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer">🔊 Listen</button>
+    <button id="stop" style="padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer">⏹ Stop</button>
+  </div>
+  <div id="info" style="font-size:12px;color:#666;margin-top:4px"></div>
 </div>
 <script>
 const text = __TEXT__;
 const lang = "__LANG__";
+const wanted = "__NAME__";
+const prefix = lang.slice(0, 2).toLowerCase();
 const synth = window.speechSynthesis;
+const info = document.getElementById("info");
+
+function loadVoices() {
+  return new Promise(resolve => {
+    const now = synth.getVoices();
+    if (now.length) return resolve(now);
+    synth.onvoiceschanged = () => resolve(synth.getVoices());
+    setTimeout(() => resolve(synth.getVoices()), 1500);
+  });
+}
+
 document.getElementById("stop").onclick = () => synth.cancel();
-document.getElementById("play").onclick = () => {
+document.getElementById("play").onclick = async () => {
   synth.cancel();
-  const voice = synth.getVoices().find(v => v.lang.toLowerCase().startsWith(lang.slice(0, 2)));
+  const voices = await loadVoices();
+  const norm = v => v.lang.toLowerCase().replace("_", "-");
+  const voice = voices.find(v => norm(v) === lang.toLowerCase())
+             || voices.find(v => norm(v).startsWith(prefix));
+  if (voices.length && !voice) {
+    info.textContent = "No " + wanted + " voice found on this device. Install one in the text-to-speech settings of your phone or computer.";
+    return;
+  }
+  info.textContent = voice ? "Voice: " + voice.name + " (" + voice.lang + ")" : "";
   const parts = text.match(/[^.!?]+[.!?:;]*/g) || [text];
   parts.forEach(p => {
     if (!p.trim()) return;
@@ -422,10 +446,15 @@ document.getElementById("play").onclick = () => {
 """
 
 
-def speak_widget(md):
-    lang = "fr-FR" if language == "Français" else "en-US"
-    html = SPEAK_HTML.replace("__TEXT__", json.dumps(speech_text(md))).replace("__LANG__", lang)
-    components.html(html, height=48)
+def speak_widget(md, lang_choice):
+    """Read a result aloud in the language it was written in (not the current menu choice)."""
+    french = lang_choice == "Français"
+    html = (
+        SPEAK_HTML.replace("__TEXT__", json.dumps(speech_text(md)))
+        .replace("__LANG__", "fr-FR" if french else "en-US")
+        .replace("__NAME__", "French" if french else "English")
+    )
+    components.html(html, height=70)
 
 
 def run_one(label, text, media):
@@ -497,7 +526,7 @@ if st.button("Go"):
                     if not notes.strip():
                         answer = f"**🎤 You asked:** {question}\n\n{answer}"
                     results.append(
-                        {"label": "Answer", "text": answer, "model": used_model, "task": task}
+                        {"label": "Answer", "text": answer, "model": used_model, "task": task, "lang": language}
                     )
                 except Exception as e:
                     st.error(str(e))
@@ -523,7 +552,7 @@ if st.button("Go"):
                     try:
                         answer, used_model = run_one(s["label"], s["text"], s["media"])
                         results.append(
-                            {"label": s["label"], "text": answer, "model": used_model, "task": task}
+                            {"label": s["label"], "text": answer, "model": used_model, "task": task, "lang": language}
                         )
                     except Exception as e:
                         results.append(
@@ -547,7 +576,7 @@ if "results" in st.session_state:
             task_name = r.get("task", "result")
             title = f"{r['label']} - {task_name}"
             items.append((title, r["text"]))
-            speak_widget(r["text"])
+            speak_widget(r["text"], r.get("lang", language))
             download_buttons(
                 [(title, r["text"])],
                 f"{safe_name(r['label'])}_{safe_name(task_name)}",

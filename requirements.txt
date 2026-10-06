@@ -4,3 +4,4 @@ python-docx
 openpyxl
 Authlib>=1.3.2
 reportlab
+gTTS

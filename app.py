@@ -49,7 +49,7 @@ def account_bar():
     """Optional Google sign-in. Hidden until the [auth] secrets are added, so the app
     keeps working for everyone (as a guest) in the meantime."""
     try:
-        st.secrets["auth"]
+        _ = st.secrets["auth"]  # only checks that it exists; never display it
     except Exception:
         return
     if getattr(st.user, "is_logged_in", False):

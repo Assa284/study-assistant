@@ -429,7 +429,7 @@ document.getElementById("play").onclick = async () => {
   const voice = voices.find(v => norm(v) === lang.toLowerCase())
              || voices.find(v => norm(v).startsWith(prefix));
   if (voices.length && !voice) {
-    info.textContent = "No " + wanted + " voice found on this device. Install one in the text-to-speech settings of your phone or computer.";
+    info.textContent = "No " + wanted + " voice found on this device. Use the Online voice button below, or install a voice in the text-to-speech settings.";
     return;
   }
   info.textContent = voice ? "Voice: " + voice.name + " (" + voice.lang + ")" : "";
@@ -455,6 +455,37 @@ def speak_widget(md, lang_choice):
         .replace("__NAME__", "French" if french else "English")
     )
     components.html(html, height=70)
+
+
+ONLINE_VOICE_MAX = 2500  # characters read aloud by the online voice
+
+
+@st.cache_data(show_spinner=False, max_entries=50)
+def make_online_voice(text, lang):
+    """Make an mp3 on the server, so it works even if the device has no voice."""
+    from gtts import gTTS
+
+    buffer = io.BytesIO()
+    gTTS(text=text, lang=lang).write_to_fp(buffer)
+    return buffer.getvalue()
+
+
+def online_voice(md, lang_choice, key):
+    spoken = speech_text(md)
+    if st.button("🌐 Online voice (any device)", key=f"{key}_btn"):
+        with st.spinner("Preparing the voice..."):
+            try:
+                st.session_state[key] = make_online_voice(
+                    spoken[:ONLINE_VOICE_MAX], "fr" if lang_choice == "Français" else "en"
+                )
+            except ImportError:
+                st.caption("The online voice is not available yet.")
+            except Exception:
+                st.caption("The online voice is busy right now. Please try again in a minute.")
+    if st.session_state.get(key):
+        st.audio(st.session_state[key], format="audio/mp3")
+        if len(spoken) > ONLINE_VOICE_MAX:
+            st.caption("Only the first part is read aloud.")
 
 
 def run_one(label, text, media):
@@ -577,6 +608,7 @@ if "results" in st.session_state:
             title = f"{r['label']} - {task_name}"
             items.append((title, r["text"]))
             speak_widget(r["text"], r.get("lang", language))
+            online_voice(r["text"], r.get("lang", language), f"voice_{run_id}_{i}")
             download_buttons(
                 [(title, r["text"])],
                 f"{safe_name(r['label'])}_{safe_name(task_name)}",

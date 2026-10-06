@@ -2,6 +2,7 @@ import io
 import json
 import os
 import re
+import requests
 import time
 import unicodedata
 import streamlit as st
@@ -61,6 +62,7 @@ def account_bar():
 
 
 account_bar()
+history_slot = st.container()
 
 client = genai.Client(api_key=api_key)
 MODELS = [
@@ -516,6 +518,138 @@ def run_one(label, text, media):
     return answer, used_model
 
 
+def is_signed_in():
+    return bool(getattr(st.user, "is_logged_in", False))
+
+
+def user_email():
+    return (st.user.get("email") or "").strip().lower()
+
+
+def history_ready():
+    """History works only when the student is signed in and the database secrets exist."""
+    return bool(
+        get_secret("SUPABASE_URL") and get_secret("SUPABASE_KEY")
+        and is_signed_in() and user_email()
+    )
+
+
+def sb_headers(extra=None):
+    key = get_secret("SUPABASE_KEY")
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    if key.startswith("eyJ"):  # old-style keys also need the Authorization header
+        headers["Authorization"] = f"Bearer {key}"
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def sb_url():
+    return get_secret("SUPABASE_URL").rstrip("/") + "/rest/v1/history"
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_history(email):
+    resp = requests.get(
+        sb_url(),
+        headers=sb_headers(),
+        params={
+            "user_email": f"eq.{email}",
+            "select": "id,created_at,task,language,source_label,result_text",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def save_history(email, results):
+    rows = [
+        {
+            "user_email": email,
+            "task": r.get("task", ""),
+            "language": r.get("lang", ""),
+            "source_label": r["label"],
+            "result_text": r["text"],
+            "model": r["model"],
+        }
+        for r in results
+        if r["model"]  # skip error messages
+    ]
+    if rows:
+        resp = requests.post(
+            sb_url(),
+            headers=sb_headers({"Prefer": "return=minimal"}),
+            data=json.dumps(rows),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        fetch_history.clear()
+
+
+def delete_history(email, row_id=None):
+    params = {"user_email": f"eq.{email}"}  # always limited to the signed-in student
+    if row_id is not None:
+        params["id"] = f"eq.{row_id}"
+    resp = requests.delete(sb_url(), headers=sb_headers(), params=params, timeout=15)
+    resp.raise_for_status()
+    fetch_history.clear()
+    st.session_state.pop("history_pick", None)
+
+
+def history_panel():
+    if not history_ready():
+        return
+    email = user_email()
+    st.checkbox("💾 Save my work to my history", value=True, key="save_history")
+    st.caption(
+        "Results are saved with your Google email and only you can see them. "
+        "Your uploaded files and photos are not saved. You can delete your history at any time."
+    )
+    with st.expander("📚 My history"):
+        try:
+            rows = fetch_history(email)
+        except Exception:
+            st.caption("Your history is not available right now.")
+            return
+        if not rows:
+            st.caption("Nothing saved yet.")
+            return
+        pick = st.selectbox(
+            "Open a saved result",
+            range(len(rows)),
+            format_func=lambda k: f"{rows[k]['created_at'][:10]} · {rows[k]['task']} · {rows[k]['source_label']}",
+            key="history_pick",
+        )
+        row = rows[pick]
+        st.markdown(row["result_text"])
+        title = f"{row['source_label']} - {row['task']}"
+        download_buttons(
+            [(title, row["result_text"])],
+            f"{safe_name(row['source_label'])}_{safe_name(row['task'])}",
+            f"hist_{row['id']}",
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🗑 Delete this result", key=f"del_{row['id']}"):
+                try:
+                    delete_history(email, row["id"])
+                    st.rerun()
+                except Exception:
+                    st.caption("Could not delete right now. Please try again.")
+        with c2:
+            if st.checkbox("I want to delete everything", key="del_all_ok") and st.button(
+                "🗑 Delete all my history", key="del_all"
+            ):
+                try:
+                    delete_history(email)
+                    st.rerun()
+                except Exception:
+                    st.caption("Could not delete right now. Please try again.")
+
+
 if "run_id" not in st.session_state:
     st.session_state["run_id"] = 0
 
@@ -592,6 +726,12 @@ if st.button("Go"):
     if results:
         st.session_state["results"] = results
         st.session_state["run_id"] += 1
+        if history_ready() and st.session_state.get("save_history", True):
+            try:
+                save_history(user_email(), results)
+                st.caption("💾 Saved to your history.")
+            except Exception:
+                st.caption("Could not save to your history right now.")
     else:
         st.session_state.pop("results", None)
 
@@ -634,3 +774,6 @@ if "results" in st.session_state:
 
     FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSd2Ye-U8eMSdyUrBcAU5eMIUvGYhRUPPMwejPOOLcFnH1unIA/viewform"
     st.link_button("\U0001F4AC Give us your feedback (30 seconds)", FORM_URL)
+
+with history_slot:
+    history_panel()

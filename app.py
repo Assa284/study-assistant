@@ -543,7 +543,7 @@ def history_ready():
 
 
 def sb_headers(extra=None):
-    key = get_secret("SUPABASE_KEY")
+    key = get_secret("SUPABASE_KEY").strip().strip("\"'")
     headers = {"apikey": key, "Content-Type": "application/json"}
     if key.startswith("eyJ"):  # old-style keys also need the Authorization header
         headers["Authorization"] = f"Bearer {key}"
@@ -553,7 +553,15 @@ def sb_headers(extra=None):
 
 
 def sb_url():
-    return get_secret("SUPABASE_URL").rstrip("/") + "/rest/v1/history"
+    """Forgiving about the usual typos: missing https://, only the project name, extra path."""
+    base = get_secret("SUPABASE_URL").strip().strip("\"'").rstrip("/")
+    if base.endswith("/rest/v1"):
+        base = base[: -len("/rest/v1")]
+    if not base.startswith("http"):
+        if "." not in base:
+            base += ".supabase.co"
+        base = "https://" + base
+    return base + "/rest/v1/history"
 
 
 def db_reason(exc):

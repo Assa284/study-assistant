@@ -556,6 +556,18 @@ def sb_url():
     return get_secret("SUPABASE_URL").rstrip("/") + "/rest/v1/history"
 
 
+def db_reason(exc):
+    """A short, safe explanation of why a database call failed (never includes keys)."""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            msg = resp.json().get("message") or resp.text
+        except Exception:
+            msg = resp.text
+        return f"HTTP {resp.status_code}: {str(msg)[:120]}"
+    return type(exc).__name__
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(email):
     resp = requests.get(
@@ -657,8 +669,9 @@ def history_page():
     email = user_email()
     try:
         rows = fetch_history(email)
-    except Exception:
-        st.caption("Your history is not available right now.")
+    except Exception as e:
+        print("History load failed:", db_reason(e))
+        st.caption(f"Your history is not available right now. ({db_reason(e)})")
         return
     if not rows:
         st.caption("Nothing saved yet. Your next results will appear here.")
@@ -884,8 +897,9 @@ if go:
             try:
                 save_history(user_email(), results)
                 st.caption("💾 Saved to your history.")
-            except Exception:
-                st.caption("Could not save to your history right now.")
+            except Exception as e:
+                print("History save failed:", db_reason(e))
+                st.caption(f"Could not save to your history right now. ({db_reason(e)})")
     else:
         st.session_state.pop("results", None)
 

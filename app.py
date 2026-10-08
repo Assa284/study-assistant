@@ -11,18 +11,52 @@ from docx import Document
 from google import genai
 from google.genai import types
 from openpyxl import load_workbook
+from html import escape as html_escape
 
-st.set_page_config(page_title="Study Assistant", page_icon="📚")
-head_left, head_right = st.columns([3, 1])
-with head_left:
-    st.title("📚 Study Assistant")
-with head_right:
-    with st.popover("📷 Photo"):
-        camera = st.camera_input("Take a photo of your notes")
-if camera is not None:
-    st.caption("📷 A camera photo is ready. It will be used when you press Go.")
-st.write("Paste your notes or upload files, choose what you want, and pick a language.")
+st.set_page_config(
+    page_title="Study Assistant", page_icon="📚", initial_sidebar_state="expanded"
+)
 
+# Keep what the student typed or chose when they move between pages.
+for _k in (
+    "language", "task", "n_series", "notes", "save_history", "pref_language", "pref_task",
+    "pref_series", "pref_rate", "pref_download", "pref_textsize",
+):
+    if _k in st.session_state:
+        st.session_state[_k] = st.session_state[_k]
+
+APP_CSS = """
+<style>
+html { font-size: __FONT__%; }
+.stApp {
+  background-image:
+    radial-gradient(900px 500px at 90% -5%, rgba(124, 92, 255, 0.20), transparent 60%),
+    radial-gradient(700px 420px at -5% 105%, rgba(34, 211, 238, 0.12), transparent 55%);
+}
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] { border-right: 1px solid rgba(128, 128, 128, 0.25); }
+div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
+.stButton > button, .stDownloadButton > button, .stLinkButton > a { border-radius: 12px; }
+button[kind="primary"], button[data-testid="stBaseButton-primary"] {
+  background: linear-gradient(90deg, #22d3ee, #7c5cff);
+  border: 0; font-weight: 700;
+}
+button[kind="primary"] p, button[data-testid="stBaseButton-primary"] p { color: #06101f !important; }
+textarea, input { border-radius: 12px !important; }
+h1 { font-weight: 800; letter-spacing: -0.5px; }
+.avatar {
+  width: 38px; height: 38px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, #7c5cff, #22d3ee); color: #06101f; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.acct { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.acct-name { font-weight: 600; word-break: break-word; }
+</style>
+"""
+_scale = {"Small": 90, "Medium": 100, "Large": 115}.get(
+    st.session_state.get("pref_textsize", "Medium"), 100
+)
+st.markdown(APP_CSS.replace("__FONT__", str(_scale)), unsafe_allow_html=True)
 
 def get_secret(name):
     value = os.environ.get(name)
@@ -40,29 +74,14 @@ if not api_key:
     st.stop()
 
 access_code = get_secret("ACCESS_CODE")
-if access_code:
+if access_code and not st.session_state.get("unlocked"):
+    st.title("📚 Study Assistant")
     entered = st.text_input("Access code", type="password")
-    if entered != access_code:
-        st.info("Enter your access code to use the app.")
-        st.stop()
-
-def account_bar():
-    """Optional Google sign-in. Hidden until the [auth] secrets are added, so the app
-    keeps working for everyone (as a guest) in the meantime."""
-    try:
-        _ = st.secrets["auth"]  # only checks that it exists; never display it
-    except Exception:
-        return
-    if getattr(st.user, "is_logged_in", False):
-        c1, c2 = st.columns([3, 1])
-        c1.caption(f"👤 Signed in as {st.user.get('name') or st.user.get('email')}")
-        c2.button("Log out", on_click=st.logout)
-    else:
-        st.button("👤 Sign in with Google to save your work", on_click=st.login)
-
-
-account_bar()
-history_slot = st.container()
+    if entered == access_code:
+        st.session_state["unlocked"] = True
+        st.rerun()
+    st.info("Enter your access code to use the app.")
+    st.stop()
 
 client = genai.Client(api_key=api_key)
 MODELS = [
@@ -82,23 +101,7 @@ MODELS_STRONG = [
 MAX_MB = 10
 MAX_SOURCES = 5
 
-language = st.radio("Language / Langue", ["English", "Français"], horizontal=True)
-task = st.selectbox(
-    "What do you want?",
-    ["Summary", "Full explanation", "Quiz", "Explain simply", "Ask a question"],
-)
-n_series = 3
-if task == "Quiz":
-    n_series = st.slider("How many quiz series?", 1, 5, 3)
-notes = st.text_area("Paste your notes (or type your question) here", height=200)
-voice = None
-if task == "Ask a question" and hasattr(st, "audio_input"):
-    voice = st.audio_input("🎤 Or ask by voice (record, then press Go)")
-files = st.file_uploader(
-    "Or upload files: PDF, Word (.docx), Excel (.xlsx), or a photo of your notes",
-    type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
-    accept_multiple_files=True,
-)
+TASKS = ["Summary", "Full explanation", "Quiz", "Explain simply", "Ask a question"]
 
 STYLE = (
     "Start directly with the content: no greeting, no introduction and no closing remarks. "
@@ -370,22 +373,25 @@ def build_pdf(items):
 
 
 def download_buttons(items, base_name, key):
-    """Word and PDF buttons side by side, so the student chooses."""
+    """Word and PDF buttons side by side. The student can choose which ones to see in Settings."""
+    mode = st.session_state.get("pref_download", "Word and PDF")
     c1, c2 = st.columns(2)
-    with c1:
-        st.download_button(
-            "⬇️ Word", data=build_docx(items), file_name=f"{base_name}.docx",
-            mime=DOCX_MIME, key=f"{key}_docx",
-        )
-    with c2:
-        pdf = build_pdf(items)
-        if pdf:
+    if mode != "PDF only":
+        with c1:
             st.download_button(
-                "⬇️ PDF", data=pdf, file_name=f"{base_name}.pdf",
-                mime="application/pdf", key=f"{key}_pdf",
+                "⬇️ Word", data=build_docx(items), file_name=f"{base_name}.docx",
+                mime=DOCX_MIME, key=f"{key}_docx",
             )
-        else:
-            st.caption("PDF is not available yet.")
+    if mode != "Word only":
+        with (c1 if mode == "PDF only" else c2):
+            pdf = build_pdf(items)
+            if pdf:
+                st.download_button(
+                    "⬇️ PDF", data=pdf, file_name=f"{base_name}.pdf",
+                    mime="application/pdf", key=f"{key}_pdf",
+                )
+            else:
+                st.caption("PDF is not available yet.")
 
 
 def speech_text(md):
@@ -440,6 +446,7 @@ document.getElementById("play").onclick = async () => {
     if (!p.trim()) return;
     const u = new SpeechSynthesisUtterance(p.trim());
     u.lang = lang;
+    u.rate = __RATE__;
     if (voice) u.voice = voice;
     synth.speak(u);
   });
@@ -455,6 +462,7 @@ def speak_widget(md, lang_choice):
         SPEAK_HTML.replace("__TEXT__", json.dumps(speech_text(md)))
         .replace("__LANG__", "fr-FR" if french else "en-US")
         .replace("__NAME__", "French" if french else "English")
+        .replace("__RATE__", str(float(st.session_state.get("pref_rate", 1.0))))
     )
     components.html(html, height=70)
 
@@ -599,24 +607,63 @@ def delete_history(email, row_id=None):
     st.session_state.pop("history_pick", None)
 
 
-def history_panel():
+FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSd2Ye-U8eMSdyUrBcAU5eMIUvGYhRUPPMwejPOOLcFnH1unIA/viewform"
+
+
+def account_block():
+    """Sidebar account area. Shows the sign-in button only when the [auth] secrets exist."""
+    try:
+        _ = st.secrets["auth"]
+    except Exception:
+        st.caption("Guest mode")
+        return
+    if is_signed_in():
+        name = st.user.get("name") or st.user.get("email") or "Student"
+        initials = "".join(w[0] for w in name.split()[:2]).upper() or "S"
+        st.markdown(
+            f'<div class="acct"><div class="avatar">{html_escape(initials)}</div>'
+            f'<div class="acct-name">{html_escape(name)}</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.button("Log out", on_click=st.logout, key="logout_btn")
+    else:
+        st.button("👤 Sign in with Google", on_click=st.login, key="login_btn")
+        st.caption("Sign in to save your work.")
+
+
+def apply_defaults():
+    """Copy the default choices from Settings to the Home controls."""
+    st.session_state["language"] = st.session_state.get("pref_language", "English")
+    st.session_state["task"] = st.session_state.get("pref_task", "Summary")
+    st.session_state["n_series"] = st.session_state.get("pref_series", 3)
+
+
+def reset_settings():
+    for k in ("pref_language", "pref_task", "pref_series", "pref_rate", "pref_download",
+              "pref_textsize", "save_history"):
+        st.session_state.pop(k, None)
+    for k in ("language", "task", "n_series"):
+        st.session_state.pop(k, None)
+
+
+def history_page():
+    st.title("🕘 History")
+    if not is_signed_in():
+        st.info("Sign in with Google (in the left menu) to save your work and see it here.")
+        return
     if not history_ready():
+        st.info("Saved history is not set up yet.")
         return
     email = user_email()
-    st.checkbox("💾 Save my work to my history", value=True, key="save_history")
-    st.caption(
-        "Results are saved with your Google email and only you can see them. "
-        "Your uploaded files and photos are not saved. You can delete your history at any time."
-    )
-    with st.expander("📚 My history"):
-        try:
-            rows = fetch_history(email)
-        except Exception:
-            st.caption("Your history is not available right now.")
-            return
-        if not rows:
-            st.caption("Nothing saved yet.")
-            return
+    try:
+        rows = fetch_history(email)
+    except Exception:
+        st.caption("Your history is not available right now.")
+        return
+    if not rows:
+        st.caption("Nothing saved yet. Your next results will appear here.")
+        return
+    with st.container(border=True):
         pick = st.selectbox(
             "Open a saved result",
             range(len(rows)),
@@ -631,29 +678,136 @@ def history_panel():
             f"{safe_name(row['source_label'])}_{safe_name(row['task'])}",
             f"hist_{row['id']}",
         )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🗑 Delete this result", key=f"del_{row['id']}"):
-                try:
-                    delete_history(email, row["id"])
-                    st.rerun()
-                except Exception:
-                    st.caption("Could not delete right now. Please try again.")
-        with c2:
-            if st.checkbox("I want to delete everything", key="del_all_ok") and st.button(
+        if st.button("🗑 Delete this result", key=f"del_{row['id']}"):
+            deleted = False
+            try:
+                delete_history(email, row["id"])
+                deleted = True
+            except Exception:
+                st.caption("Could not delete right now. Please try again.")
+            if deleted:
+                st.rerun()
+
+
+def settings_page():
+    st.title("⚙️ Settings")
+    st.session_state.setdefault("pref_language", "English")
+    st.session_state.setdefault("pref_task", "Summary")
+    st.session_state.setdefault("pref_series", 3)
+    st.session_state.setdefault("pref_rate", 1.0)
+    st.session_state.setdefault("pref_download", "Word and PDF")
+    st.session_state.setdefault("pref_textsize", "Medium")
+
+    with st.container(border=True):
+        st.subheader("Defaults")
+        st.radio("Default language", ["English", "Français"], horizontal=True,
+                 key="pref_language", on_change=apply_defaults)
+        st.selectbox("Default task", TASKS, key="pref_task", on_change=apply_defaults)
+        st.slider("Default number of quiz series", 1, 5, key="pref_series", on_change=apply_defaults)
+
+    with st.container(border=True):
+        st.subheader("Reading aloud")
+        st.slider("Reading speed", 0.6, 1.4, step=0.1, key="pref_rate")
+        st.caption("Used by the 🔊 Listen button. The online voice has a fixed speed.")
+
+    with st.container(border=True):
+        st.subheader("Downloads")
+        st.radio("Show download buttons for", ["Word and PDF", "Word only", "PDF only"],
+                 horizontal=True, key="pref_download")
+
+    with st.container(border=True):
+        st.subheader("Appearance")
+        st.radio("Text size", ["Small", "Medium", "Large"], horizontal=True, key="pref_textsize")
+        st.caption("For dark or light mode, open the ⋮ menu at the top right, choose Settings, then Theme.")
+
+    with st.container(border=True):
+        st.subheader("Privacy and data")
+        if history_ready():
+            st.checkbox("💾 Save my work to my history", value=True, key="save_history")
+            st.caption(
+                "Results are saved with your Google email and only you can see them. "
+                "Your uploaded files and photos are not saved."
+            )
+            if st.checkbox("I want to delete my whole history", key="del_all_ok") and st.button(
                 "🗑 Delete all my history", key="del_all"
             ):
                 try:
-                    delete_history(email)
-                    st.rerun()
+                    delete_history(user_email())
+                    st.success("Your history was deleted.")
                 except Exception:
                     st.caption("Could not delete right now. Please try again.")
+        else:
+            st.caption("Sign in with Google to save your work and manage your history.")
+        st.caption("The 🌐 online voice sends the text of a result to Google's voice service.")
 
+    with st.container(border=True):
+        st.subheader("Help and about")
+        st.markdown(
+            "1. Paste notes, upload files, or take a 📷 photo.\n"
+            "2. Pick a language and what you want.\n"
+            "3. Press **Get started**, then listen or download the result."
+        )
+        st.link_button("💬 Send us your feedback", FORM_URL)
+        st.caption("Study Assistant · AI can make mistakes. Check important facts in your textbook.")
+
+    st.button("↩️ Reset my settings", on_click=reset_settings)
+
+
+with st.sidebar:
+    st.markdown("## 📚 Study Assistant")
+    page = st.radio(
+        "Menu", ["🏠 Home", "🕘 History", "⚙️ Settings"],
+        label_visibility="collapsed", key="nav",
+    )
+    st.divider()
+    account_block()
+
+if page == "🕘 History":
+    history_page()
+    st.stop()
+if page == "⚙️ Settings":
+    settings_page()
+    st.stop()
+
+# ---------------- Home ----------------
+st.session_state.setdefault("language", st.session_state.get("pref_language", "English"))
+st.session_state.setdefault("task", st.session_state.get("pref_task", "Summary"))
+st.session_state.setdefault("n_series", st.session_state.get("pref_series", 3))
+
+head_left, head_right = st.columns([3, 1])
+with head_left:
+    st.title("📚 Study Assistant")
+    st.caption(
+        "Your personal study companion. Upload, paste or write your notes, "
+        "choose what you want, and get instant help."
+    )
+with head_right:
+    with st.popover("📷 Photo"):
+        camera = st.camera_input("Take a photo of your notes")
+if camera is not None:
+    st.caption("📷 A camera photo is ready. It will be used when you press **Get started**.")
+
+with st.container(border=True):
+    language = st.radio("Language / Langue", ["English", "Français"], horizontal=True, key="language")
+    task = st.selectbox("What do you want?", TASKS, key="task")
+    n_series = 3
+    if task == "Quiz":
+        n_series = st.slider("How many quiz series?", 1, 5, key="n_series")
+    notes = st.text_area("Paste your notes (or type your question) here", height=200, key="notes")
+    voice = None
+    if task == "Ask a question" and hasattr(st, "audio_input"):
+        voice = st.audio_input("🎤 Or ask by voice (record, then press Get started)")
+    files = st.file_uploader(
+        "Or upload files: PDF, Word (.docx), Excel (.xlsx), or a photo of your notes",
+        type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+    )
+    go = st.button("Get started →", type="primary")
 
 if "run_id" not in st.session_state:
     st.session_state["run_id"] = 0
 
-if st.button("Go"):
+if go:
     results = []
     if task == "Ask a question":
         sources, problems = collect_sources(files, notes, include_notes=False, camera=camera)
@@ -774,6 +928,3 @@ if "results" in st.session_state:
 
     FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSd2Ye-U8eMSdyUrBcAU5eMIUvGYhRUPPMwejPOOLcFnH1unIA/viewform"
     st.link_button("\U0001F4AC Give us your feedback (30 seconds)", FORM_URL)
-
-with history_slot:
-    history_panel()

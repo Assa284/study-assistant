@@ -13,9 +13,24 @@ from google.genai import types
 from openpyxl import load_workbook
 from html import escape as html_escape
 
+APP_NAME = "Learnova"
+APP_TAGLINE = "Learning Without Limits"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+LOGO_ICON = os.path.join(_HERE, "logo_icon.png")
+LOGO_FULL = os.path.join(_HERE, "logo_full.png")
+HAS_ICON = os.path.exists(LOGO_ICON)
+HAS_FULL = os.path.exists(LOGO_FULL)
+
 st.set_page_config(
-    page_title="Study Assistant", page_icon="📚", initial_sidebar_state="expanded"
+    page_title=APP_NAME,
+    page_icon=LOGO_ICON if HAS_ICON else "🎓",
+    initial_sidebar_state="expanded",
 )
+if HAS_ICON:
+    try:  # shows the logo at the top of the menu, and in the header on phones
+        st.logo(LOGO_ICON, size="large")
+    except Exception:
+        pass
 
 # Keep what the student typed or chose when they move between pages.
 for _k in (
@@ -30,15 +45,15 @@ APP_CSS = """
 html { font-size: __FONT__%; }
 .stApp {
   background-image:
-    radial-gradient(900px 500px at 90% -5%, rgba(124, 92, 255, 0.20), transparent 60%),
-    radial-gradient(700px 420px at -5% 105%, rgba(34, 211, 238, 0.12), transparent 55%);
+    radial-gradient(900px 500px at 90% -5%, rgba(16, 185, 129, 0.18), transparent 60%),
+    radial-gradient(700px 420px at -5% 105%, rgba(20, 184, 166, 0.10), transparent 55%);
 }
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { border-right: 1px solid rgba(128, 128, 128, 0.25); }
 div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
 .stButton > button, .stDownloadButton > button, .stLinkButton > a { border-radius: 12px; }
 button[kind="primary"], button[data-testid="stBaseButton-primary"] {
-  background: linear-gradient(90deg, #22d3ee, #7c5cff);
+  background: linear-gradient(90deg, #34d399, #10b981);
   border: 0; font-weight: 700;
 }
 button[kind="primary"] p, button[data-testid="stBaseButton-primary"] p { color: #06101f !important; }
@@ -46,7 +61,7 @@ textarea, input { border-radius: 12px !important; }
 h1 { font-weight: 800; letter-spacing: -0.5px; }
 .avatar {
   width: 38px; height: 38px; border-radius: 50%; flex: none;
-  background: linear-gradient(135deg, #7c5cff, #22d3ee); color: #06101f; font-weight: 800;
+  background: linear-gradient(135deg, #10b981, #34d399); color: #06101f; font-weight: 800;
   display: flex; align-items: center; justify-content: center;
 }
 .acct { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
@@ -75,7 +90,10 @@ if not api_key:
 
 access_code = get_secret("ACCESS_CODE")
 if access_code and not st.session_state.get("unlocked"):
-    st.title("📚 Study Assistant")
+    if HAS_FULL:
+        st.image(LOGO_FULL, width=260)
+    else:
+        st.title(APP_NAME)
     entered = st.text_input("Access code", type="password")
     if entered == access_code:
         st.session_state["unlocked"] = True
@@ -769,13 +787,21 @@ def settings_page():
             "3. Press **Get started**, then listen or download the result."
         )
         st.link_button("💬 Send us your feedback", FORM_URL)
-        st.caption("Study Assistant · AI can make mistakes. Check important facts in your textbook.")
+        st.caption(f"{APP_NAME} · {APP_TAGLINE} · AI can make mistakes. Check important facts in your textbook.")
 
     st.button("↩️ Reset my settings", on_click=reset_settings)
 
 
 with st.sidebar:
-    st.markdown("## 📚 Study Assistant")
+    if HAS_ICON:
+        b1, b2 = st.columns([1, 3])
+        with b1:
+            st.image(LOGO_ICON, width=48)
+        with b2:
+            st.markdown(f"### {APP_NAME}")
+    else:
+        st.markdown(f"### {APP_NAME}")
+    st.caption(APP_TAGLINE)
     page = st.radio(
         "Menu", ["🏠 Home", "🕘 History", "⚙️ Settings"],
         label_visibility="collapsed", key="nav",
@@ -797,9 +823,9 @@ st.session_state.setdefault("n_series", st.session_state.get("pref_series", 3))
 
 head_left, head_right = st.columns([3, 1])
 with head_left:
-    st.title("📚 Study Assistant")
+    st.title(APP_NAME)
     st.caption(
-        "Your personal study companion. Upload, paste or write your notes, "
+        f"{APP_TAGLINE}. Upload, paste or write your notes, "
         "choose what you want, and get instant help."
     )
 with head_right:
@@ -933,7 +959,7 @@ if "results" in st.session_state:
         st.divider()
     if len(items) > 1:
         st.markdown("**All results together**")
-        download_buttons(items, "Study_Assistant_results", f"dl_all_{run_id}")
+        download_buttons(items, "Learnova_results", f"dl_all_{run_id}")
     st.caption(
         "AI can make mistakes. Check important facts in your textbook. "
         f"(Model: {', '.join(sorted(models_used)) or 'none'})"

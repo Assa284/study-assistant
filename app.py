@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -13,13 +14,13 @@ from google.genai import types
 from openpyxl import load_workbook
 from html import escape as html_escape
 
-APP_NAME = "Learnova"
-APP_TAGLINE = "Learning Without Limits"
+APP_NAME = "ARISTENIX"
+APP_TAGLINE = "Rise Smarter. Learn Faster."
 _HERE = os.path.dirname(os.path.abspath(__file__))
 LOGO_ICON = os.path.join(_HERE, "logo_icon.png")
-LOGO_FULL = os.path.join(_HERE, "logo_full.png")
+ROBOT = os.path.join(_HERE, "robot.png")
 HAS_ICON = os.path.exists(LOGO_ICON)
-HAS_FULL = os.path.exists(LOGO_FULL)
+HAS_ROBOT = os.path.exists(ROBOT)
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -45,15 +46,15 @@ APP_CSS = """
 html { font-size: __FONT__%; }
 .stApp {
   background-image:
-    radial-gradient(900px 500px at 90% -5%, rgba(16, 185, 129, 0.18), transparent 60%),
-    radial-gradient(700px 420px at -5% 105%, rgba(20, 184, 166, 0.10), transparent 55%);
+    radial-gradient(900px 500px at 90% -5%, rgba(245, 125, 5, 0.16), transparent 60%),
+    radial-gradient(700px 420px at -5% 105%, rgba(45, 127, 215, 0.14), transparent 55%);
 }
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { border-right: 1px solid rgba(128, 128, 128, 0.25); }
 div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
 .stButton > button, .stDownloadButton > button, .stLinkButton > a { border-radius: 12px; }
 button[kind="primary"], button[data-testid="stBaseButton-primary"] {
-  background: linear-gradient(90deg, #34d399, #10b981);
+  background: linear-gradient(90deg, #ffa43a, #f57d05);
   border: 0; font-weight: 700;
 }
 button[kind="primary"] p, button[data-testid="stBaseButton-primary"] p { color: #06101f !important; }
@@ -61,11 +62,14 @@ textarea, input { border-radius: 12px !important; }
 h1 { font-weight: 800; letter-spacing: -0.5px; }
 .avatar {
   width: 38px; height: 38px; border-radius: 50%; flex: none;
-  background: linear-gradient(135deg, #10b981, #34d399); color: #06101f; font-weight: 800;
+  background: linear-gradient(135deg, #f57d05, #ffa43a); color: #06101f; font-weight: 800;
   display: flex; align-items: center; justify-content: center;
 }
 .acct { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
 .acct-name { font-weight: 600; word-break: break-word; }
+.brand-word { font-weight: 800; letter-spacing: 0.14em; font-size: 1.2rem; line-height: 1.1; }
+.brand-tag { color: #f57d05; font-weight: 700; letter-spacing: 0.12em; font-size: 0.6rem; text-transform: uppercase; }
+[data-testid="stSidebar"] img { border-radius: 14px; }
 </style>
 """
 _scale = {"Small": 90, "Medium": 100, "Large": 115}.get(
@@ -90,10 +94,13 @@ if not api_key:
 
 access_code = get_secret("ACCESS_CODE")
 if access_code and not st.session_state.get("unlocked"):
-    if HAS_FULL:
-        st.image(LOGO_FULL, width=260)
-    else:
-        st.title(APP_NAME)
+    if HAS_ICON:
+        st.image(LOGO_ICON, width=120)
+    st.markdown(
+        f'<div class="brand-word" style="font-size:2rem">{APP_NAME}</div>'
+        f'<div class="brand-tag">{APP_TAGLINE}</div>',
+        unsafe_allow_html=True,
+    )
     entered = st.text_input("Access code", type="password")
     if entered == access_code:
         st.session_state["unlocked"] = True
@@ -390,19 +397,110 @@ def build_pdf(items):
         return None
 
 
+def js_str(value):
+    """A safe JavaScript string for putting text inside a <script>."""
+    return json.dumps(value).replace("</", "<\\/")
+
+
+def plain_text(md):
+    text = re.sub(r"^#{1,6}\s*", "", md, flags=re.M)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"^\s*[-*]\s+", "• ", text, flags=re.M)
+    return text.replace("$", "").strip()
+
+
+def share_message(items, limit=3500):
+    if len(items) == 1:
+        body = plain_text(items[0][1])
+    else:
+        body = "\n\n".join(f"{title}\n{plain_text(md)}" for title, md in items)
+    if len(body) > limit:
+        body = body[:limit].rsplit(" ", 1)[0] + "…"
+    return f"{body}\n\nCreated with {APP_NAME} · {APP_TAGLINE}"
+
+
+SHARE_HTML = r"""
+<div style="font-family:sans-serif">
+  <button id="share" style="padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer;width:100%">🔗 Share</button>
+  <div id="msg" style="font-size:12px;color:#888;margin-top:4px"></div>
+</div>
+<script>
+const title = __TITLE__;
+const text = __TEXT__;
+const fileB64 = __FILE__;
+const fileName = __FNAME__;
+const mime = __MIME__;
+const msg = document.getElementById("msg");
+
+function toFile() {
+  if (!fileB64) return null;
+  const bin = atob(fileB64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new File([arr], fileName, { type: mime });
+}
+
+async function copyText() {
+  const all = title + "\n\n" + text;
+  try {
+    await navigator.clipboard.writeText(all);
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = all;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+  msg.textContent = "Copied. Paste it in any app.";
+}
+
+document.getElementById("share").onclick = async () => {
+  try {
+    const f = toFile();
+    if (f && navigator.canShare && navigator.canShare({ files: [f] })) {
+      await navigator.share({ files: [f], title: title, text: title });
+      return;
+    }
+    if (navigator.share) {
+      await navigator.share({ title: title, text: text });
+      return;
+    }
+    await copyText();
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    try { await copyText(); } catch (e2) { msg.textContent = "Sharing is not available here. Download the file and send it."; }
+  }
+};
+</script>
+"""
+
+
+def share_widget(title, message, file_bytes, file_name, mime):
+    html = (
+        SHARE_HTML.replace("__TITLE__", js_str(title))
+        .replace("__TEXT__", js_str(message))
+        .replace("__FILE__", js_str(base64.b64encode(file_bytes).decode() if file_bytes else ""))
+        .replace("__FNAME__", js_str(file_name))
+        .replace("__MIME__", js_str(mime))
+    )
+    components.html(html, height=64)
+
+
 def download_buttons(items, base_name, key):
-    """Word and PDF buttons side by side. The student can choose which ones to see in Settings."""
+    """Word, PDF and Share side by side. Which download buttons show is a choice in Settings."""
     mode = st.session_state.get("pref_download", "Word and PDF")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
+    pdf = build_pdf(items)
+    word = build_docx(items) if (mode != "PDF only" or not pdf) else None
     if mode != "PDF only":
         with c1:
             st.download_button(
-                "⬇️ Word", data=build_docx(items), file_name=f"{base_name}.docx",
+                "⬇️ Word", data=word, file_name=f"{base_name}.docx",
                 mime=DOCX_MIME, key=f"{key}_docx",
             )
     if mode != "Word only":
         with (c1 if mode == "PDF only" else c2):
-            pdf = build_pdf(items)
             if pdf:
                 st.download_button(
                     "⬇️ PDF", data=pdf, file_name=f"{base_name}.pdf",
@@ -410,6 +508,14 @@ def download_buttons(items, base_name, key):
                 )
             else:
                 st.caption("PDF is not available yet.")
+    with c3:
+        if pdf:
+            file_bytes, file_name, mime = pdf, f"{base_name}.pdf", "application/pdf"
+        else:
+            file_bytes, file_name, mime = word or build_docx(items), f"{base_name}.docx", DOCX_MIME
+        title = items[0][0] if len(items) == 1 else f"{APP_NAME} results"
+        share_widget(title, share_message(items), file_bytes, file_name, mime)
+    st.caption("⬇️ Word to edit · ⬇️ PDF to read or print · 🔗 Share to send it to any app")
 
 
 def speech_text(md):
@@ -477,7 +583,7 @@ def speak_widget(md, lang_choice):
     """Read a result aloud in the language it was written in (not the current menu choice)."""
     french = lang_choice == "Français"
     html = (
-        SPEAK_HTML.replace("__TEXT__", json.dumps(speech_text(md)))
+        SPEAK_HTML.replace("__TEXT__", js_str(speech_text(md)))
         .replace("__LANG__", "fr-FR" if french else "en-US")
         .replace("__NAME__", "French" if french else "English")
         .replace("__RATE__", str(float(st.session_state.get("pref_rate", 1.0))))
@@ -648,6 +754,71 @@ def delete_history(email, row_id=None):
 FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSd2Ye-U8eMSdyUrBcAU5eMIUvGYhRUPPMwejPOOLcFnH1unIA/viewform"
 
 
+TASK_HELP = {
+    "Summary": "Short key points of your material, in at most 10 bullets (up to 15 for long documents). Best for quick revision.",
+    "Full explanation": "A detailed, point-by-point explanation with a list of difficult words and their simple meanings. Best for understanding a lesson.",
+    "Quiz": "Multiple-choice questions in numbered series (Series 1, 2, 3...), with one answer key per series. Best for testing yourself.",
+    "Explain simply": "A short, plain-language version with an everyday example, as if explained to a younger student.",
+    "Ask a question": "Type or record a question. Your files are used to answer it when they help, and general knowledge is clearly marked.",
+}
+
+GUIDE = [
+    ("🏠 Home: what you choose", [
+        ("Language / Langue", "Chooses the language of the answer, English or Français. Your notes can be in any language."),
+        ("What do you want?", "Pick one of five options: Summary, Full explanation, Quiz, Explain simply or Ask a question. The line under the menu explains the one you chose."),
+        ("Summary", TASK_HELP["Summary"]),
+        ("Full explanation", TASK_HELP["Full explanation"]),
+        ("Quiz", TASK_HELP["Quiz"]),
+        ("Explain simply", TASK_HELP["Explain simply"]),
+        ("Ask a question", TASK_HELP["Ask a question"]),
+        ("How many quiz series?", "Only for Quiz. Each series has 5 different questions, so more series cover more of the lesson. A short text may give fewer series."),
+    ]),
+    ("🏠 Home: what you give", [
+        ("Paste your notes", "Type or paste text here. In Ask a question, write your question here instead."),
+        ("🎤 Ask by voice", "Only in Ask a question. Record your question; it is written down and answered."),
+        ("Upload files", "PDF, Word (.docx), Excel (.xlsx), PNG or JPG, up to 10 MB each and up to 5 items per round. Every file gets its own result, labelled with its name."),
+        ("📷 Photo (top right)", "Takes a picture of your notes with your camera. It is used like an uploaded photo."),
+        ("Get started →", "Runs your choice. Your result appears below the card."),
+    ]),
+    ("📄 Your results", [
+        ("🔊 Listen / ⏹ Stop", "Reads the result aloud with your device's voice, in the language of the answer. If your device has no voice for that language, a message tells you."),
+        ("🌐 Online voice", "Makes the audio on our server, so it works on any device. It reads the first part of long results."),
+        ("⬇️ Word and ⬇️ PDF", "Downloads the result: Word to edit it, PDF to read and print."),
+        ("🔗 Share", "Sends the result to any app on your device, such as WhatsApp, email, Telegram or Drive. If sharing is not available, the text is copied so you can paste it anywhere."),
+        ("👍 👎 and feedback", "Tell us if a result helped. The feedback form takes about 30 seconds."),
+    ]),
+    ("📚 The other pages", [
+        ("🕘 History", "Your saved results, if you are signed in. Open, download, share or delete any item."),
+        ("⚙️ Settings", "Default language and task, reading speed, which download buttons to show, text size, privacy and reset."),
+        ("👤 Sign in with Google", "Lets you save your work and see it in History. You can also use the app as a guest without signing in."),
+        ("📘 Guide", "This page: every option and what it is for."),
+        ("🤖 Ask Ari", "Our robot guide answers your questions about using the app."),
+    ]),
+]
+
+ARI_FAQ = {
+    "How do I get a summary of my notes?": "1. Choose **Summary** under *What do you want?*\n2. Paste your notes or upload a file.\n3. Press **Get started →** and read the result below.",
+    "How do I use a photo of my notes?": "Tap **📷 Photo** at the top right, take the picture, then press **Get started →**. You can also upload a photo in the upload box.",
+    "How do I make a quiz?": "Choose **Quiz**, pick how many series you want, add your notes or files, and press **Get started →**. Each series has 5 questions and its own answer key.",
+    "How do I listen to a result in French?": "Choose **Français**, run your result, then press **🔊 Listen**. If your device has no French voice, press **🌐 Online voice** instead.",
+    "How do I download or share a result?": "Under each result, press **⬇️ Word** or **⬇️ PDF** to download it, or **🔗 Share** to send it to WhatsApp, email or any other app.",
+    "Where is my saved work?": "Sign in with Google, then open **🕘 History**. You can turn saving on or off in **⚙️ Settings**.",
+    "Which files can I upload?": "PDF, Word (.docx), Excel (.xlsx), PNG and JPG, up to 10 MB each. Every file gets its own result.",
+    "Why does a result say it could not be saved?": "Saving works only when you are signed in and the database is available. Your result is still shown, so you can download it. Try again in a minute.",
+}
+
+ARI_LIMIT = 20  # questions per visit, to protect the free AI limit
+
+
+def guide_text():
+    lines = []
+    for title, rows in GUIDE:
+        lines.append(title)
+        for name, text in rows:
+            lines.append(f"- {name}: {text}")
+    return "\n".join(lines)
+
+
 def account_block():
     """Sidebar account area. Shows the sign-in button only when the [auth] secrets exist."""
     try:
@@ -686,6 +857,7 @@ def reset_settings():
 
 def history_page():
     st.title("🕘 History")
+    st.caption("Your saved results. Pick one to read, download, share or delete it.")
     if not is_signed_in():
         st.info("Sign in with Google (in the left menu) to save your work and see it here.")
         return
@@ -741,22 +913,27 @@ def settings_page():
         st.subheader("Defaults")
         st.radio("Default language", ["English", "Français"], horizontal=True,
                  key="pref_language", on_change=apply_defaults)
+        st.caption("The language of the answers when you open the app. You can still change it on Home.")
         st.selectbox("Default task", TASKS, key="pref_task", on_change=apply_defaults)
+        st.caption("The option that is already selected on Home, for example Summary or Quiz.")
         st.slider("Default number of quiz series", 1, 5, key="pref_series", on_change=apply_defaults)
+        st.caption("How many quiz series Quiz makes by default. Each series has 5 different questions.")
 
     with st.container(border=True):
         st.subheader("Reading aloud")
         st.slider("Reading speed", 0.6, 1.4, step=0.1, key="pref_rate")
-        st.caption("Used by the 🔊 Listen button. The online voice has a fixed speed.")
+        st.caption("How fast the 🔊 Listen button reads. 1.0 is normal speed. The 🌐 online voice has a fixed speed.")
 
     with st.container(border=True):
         st.subheader("Downloads")
         st.radio("Show download buttons for", ["Word and PDF", "Word only", "PDF only"],
                  horizontal=True, key="pref_download")
+        st.caption("Choose which download buttons appear under each result. 🔗 Share is always available.")
 
     with st.container(border=True):
         st.subheader("Appearance")
         st.radio("Text size", ["Small", "Medium", "Large"], horizontal=True, key="pref_textsize")
+        st.caption("Makes all the text in the app smaller or larger.")
         st.caption("For dark or light mode, open the ⋮ menu at the top right, choose Settings, then Theme.")
 
     with st.container(border=True):
@@ -784,7 +961,8 @@ def settings_page():
         st.markdown(
             "1. Paste notes, upload files, or take a 📷 photo.\n"
             "2. Pick a language and what you want.\n"
-            "3. Press **Get started**, then listen or download the result."
+            "3. Press **Get started**, then listen, download or share the result.\n\n"
+            "Need more detail? Open **📘 Guide**, or ask **🤖 Ari**."
         )
         st.link_button("💬 Send us your feedback", FORM_URL)
         st.caption(f"{APP_NAME} · {APP_TAGLINE} · AI can make mistakes. Check important facts in your textbook.")
@@ -792,28 +970,102 @@ def settings_page():
     st.button("↩️ Reset my settings", on_click=reset_settings)
 
 
+def go_help():
+    st.session_state["nav"] = "🤖 Ask Ari"
+
+
+def guide_page():
+    st.title("📘 Guide")
+    st.caption(f"Every option in {APP_NAME} and what it is for.")
+    for title, rows in GUIDE:
+        with st.container(border=True):
+            st.subheader(title)
+            for name, text in rows:
+                st.markdown(f"**{name}**: {text}")
+    st.button("🤖 Still stuck? Ask Ari", on_click=go_help, key="guide_ari")
+
+
+def ari_reply(question, chat):
+    recent = chat[-6:]
+    convo = "\n".join(f"{'Student' if role == 'user' else 'Ari'}: {m}" for role, m in recent)
+    prompt = (
+        f"You are Ari, the friendly robot guide of {APP_NAME}, a study app for students. "
+        "Explain only how to use the app, using ONLY the guide below. Never invent features. "
+        "Reply in the language of the student's question (English or French). Be short: at most "
+        "5 sentences, or numbered steps when explaining how to do something. If the student wants "
+        "help with homework or general knowledge, explain that this is what 'Ask a question' on the "
+        "Home page is for, and how to use it. Never ask for passwords, keys or personal data.\n\n"
+        f"APP GUIDE:\n{guide_text()}\n\nCONVERSATION SO FAR:\n{convo}\n\nStudent: {question}\nAri:"
+    )
+    response, _ = ask_ai([prompt])
+    return (getattr(response, "text", "") or "").strip()
+
+
+def ari_page():
+    top1, top2 = st.columns([1, 3])
+    with top1:
+        if HAS_ROBOT:
+            st.image(ROBOT, width=120)
+    with top2:
+        st.title("🤖 Ask Ari")
+        st.caption(f"Hi, I'm Ari, your {APP_NAME} guide. Ask me how to use any option of the app.")
+    with st.container(border=True):
+        st.markdown("**Quick answers**")
+        for q, a in ARI_FAQ.items():
+            with st.expander(q):
+                st.markdown(a)
+    chat = st.session_state.setdefault("ari_chat", [])
+    question = st.chat_input("Ask Ari how to use the app...")
+    if question:
+        question = question.strip()[:300]
+        chat.append(("user", question))
+        if st.session_state.get("ari_count", 0) >= ARI_LIMIT:
+            chat.append(("assistant", "We have talked a lot today! Please check the Guide page, or come back later."))
+        else:
+            st.session_state["ari_count"] = st.session_state.get("ari_count", 0) + 1
+            with st.spinner("Ari is thinking..."):
+                try:
+                    answer = ari_reply(question, chat[:-1])
+                except Exception:
+                    answer = ""
+            chat.append(("assistant", answer or "I could not answer right now. Please check the Guide page or try again."))
+    for role, message in chat:
+        with st.chat_message(role, avatar=(ROBOT if (role == "assistant" and HAS_ROBOT) else None)):
+            st.markdown(message)
+
+
 with st.sidebar:
-    if HAS_ICON:
-        b1, b2 = st.columns([1, 3])
-        with b1:
+    b1, b2 = st.columns([1, 3])
+    with b1:
+        if HAS_ICON:
             st.image(LOGO_ICON, width=48)
-        with b2:
-            st.markdown(f"### {APP_NAME}")
-    else:
-        st.markdown(f"### {APP_NAME}")
-    st.caption(APP_TAGLINE)
+    with b2:
+        st.markdown(f'<div class="brand-word">{APP_NAME}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="brand-tag">{APP_TAGLINE}</div>', unsafe_allow_html=True)
     page = st.radio(
-        "Menu", ["🏠 Home", "🕘 History", "⚙️ Settings"],
+        "Menu", ["🏠 Home", "🕘 History", "⚙️ Settings", "📘 Guide", "🤖 Ask Ari"],
         label_visibility="collapsed", key="nav",
     )
     st.divider()
     account_block()
+    st.divider()
+    if HAS_ROBOT:
+        st.image(ROBOT, width=110)
+    st.markdown("**Need help? I'm Ari.**")
+    st.caption("I can explain every option of the app.")
+    st.button("🤖 Ask Ari", on_click=go_help, key="ari_btn")
 
 if page == "🕘 History":
     history_page()
     st.stop()
 if page == "⚙️ Settings":
     settings_page()
+    st.stop()
+if page == "📘 Guide":
+    guide_page()
+    st.stop()
+if page == "🤖 Ask Ari":
+    ari_page()
     st.stop()
 
 # ---------------- Home ----------------
@@ -830,26 +1082,35 @@ with head_left:
     )
 with head_right:
     with st.popover("📷 Photo"):
+        st.caption("Take a picture of your notes. It is used like an uploaded photo.")
         camera = st.camera_input("Take a photo of your notes")
+    st.button("🤖 Ask Ari", on_click=go_help, key="ari_home")
 if camera is not None:
     st.caption("📷 A camera photo is ready. It will be used when you press **Get started**.")
 
 with st.container(border=True):
     language = st.radio("Language / Langue", ["English", "Français"], horizontal=True, key="language")
+    st.caption("The language of the answer. Your notes can be in any language.")
     task = st.selectbox("What do you want?", TASKS, key="task")
+    st.caption(TASK_HELP[task])
     n_series = 3
     if task == "Quiz":
         n_series = st.slider("How many quiz series?", 1, 5, key="n_series")
+        st.caption("Each series has 5 different questions. More series cover more of the lesson.")
     notes = st.text_area("Paste your notes (or type your question) here", height=200, key="notes")
+    st.caption("Type or paste text here. In Ask a question, write your question here.")
     voice = None
     if task == "Ask a question" and hasattr(st, "audio_input"):
         voice = st.audio_input("🎤 Or ask by voice (record, then press Get started)")
+        st.caption("Record your question. It is written down and then answered.")
     files = st.file_uploader(
         "Or upload files: PDF, Word (.docx), Excel (.xlsx), or a photo of your notes",
         type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
         accept_multiple_files=True,
     )
+    st.caption("Up to 10 MB each and 5 items per round. Every file gets its own result, labelled with its name.")
     go = st.button("Get started →", type="primary")
+    st.caption("Runs your choice. Your result appears below, with Listen, Download and Share.")
 
 if "run_id" not in st.session_state:
     st.session_state["run_id"] = 0
@@ -959,7 +1220,7 @@ if "results" in st.session_state:
         st.divider()
     if len(items) > 1:
         st.markdown("**All results together**")
-        download_buttons(items, "Learnova_results", f"dl_all_{run_id}")
+        download_buttons(items, "Aristenix_results", f"dl_all_{run_id}")
     st.caption(
         "AI can make mistakes. Check important facts in your textbook. "
         f"(Model: {', '.join(sorted(models_used)) or 'none'})"
